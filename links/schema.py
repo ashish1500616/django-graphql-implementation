@@ -1,101 +1,56 @@
+import django_filters
 import graphene
-from django.db.models import Q
 from graphene_django import DjangoObjectType
-from graphql import GraphQLError
+from graphene_django.filter import DjangoFilterConnectionField
 
-from hackernews.users.schema import UserType
 from .models import Link, Vote
 
 
-class LinkType(DjangoObjectType):
+class LinkFilter(django_filters.FilterSet):
     class Meta:
         model = Link
+        fields = ['url', 'description']
 
 
-class VoteType(DjangoObjectType):
+class LinkNode(DjangoObjectType):
+    class Meta:
+        model = Link
+        # 3
+        interfaces = (graphene.relay.Node,)
+
+
+class VoteNode(DjangoObjectType):
     class Meta:
         model = Vote
+        interfaces = (graphene.relay.Node,)
 
 
-class CreateLink(graphene.Mutation):
-    id = graphene.Int()
-    url = graphene.String()
-    description = graphene.String()
-    posted_by = graphene.Field(UserType)
+class RelayQuery(graphene.ObjectType):
+    # 4
+    relay_link = graphene.relay.Node.Field(LinkNode)
+    # 5
+    relay_links = DjangoFilterConnectionField(LinkNode, filterset_class=LinkFilter)
 
-    class Arguments:
+
+class RelayCreateLink(graphene.relay.ClientIDMutation):
+    link = graphene.Field(LinkNode)
+
+    class Input:
         url = graphene.String()
         description = graphene.String()
 
-    # 3
-    def mutate(self, info, url, description):
+    def mutate_and_get_payload(root, info, **input):
         user = info.context.user or None
-        link = Link(url=url, description=description, posted_by=user)
+
+        link = Link(
+            url=input.get('url'),
+            description=input.get('description'),
+            posted_by=user,
+        )
         link.save()
 
-        return CreateLink(
-            id=link.id,
-            url=link.url,
-            description=link.description,
-            posted_by=link.posted_by,
-        )
+        return RelayCreateLink(link=link)
 
 
-class CreateVote(graphene.Mutation):
-    user = graphene.Field(UserType)
-    link = graphene.Field(LinkType)
-
-    class Arguments:
-        link_id = graphene.Int()
-
-    def mutate(self, info, link_id):
-        user = info.context.user
-        if user.is_anonymous:
-            raise GraphQLError('You must be logged in to vote!')
-
-        link = Link.objects.filter(id=link_id).first()
-        if not link:
-            raise Exception('Invalid Link!')
-
-        Vote.objects.create(
-            user=user,
-            link=link,
-        )
-
-        return CreateVote(user=user, link=link)
-
-
-class Query(graphene.ObjectType):
-    links = graphene.List(
-        LinkType,
-        search=graphene.String(),
-        first=graphene.Int(),
-        skip=graphene.Int(),
-    )
-    votes = graphene.List(VoteType)
-
-    def resolve_links(self, info, search=None, first=None, skip=None, **kwargs):
-        qs = Link.objects.all()
-
-        if search:
-            filter = (
-                    Q(url__icontains=search) |
-                    Q(description__icontains=search)
-            )
-            qs = qs.filter(filter)
-
-        if skip:
-            qs = qs[skip:]
-
-        if first:
-            qs = qs[:first]
-
-        return qs
-
-    def resolve_votes(self, info, **kwargs):
-        return Vote.objects.all()
-
-
-class Mutation(graphene.ObjectType):
-    create_link = CreateLink.Field()
-    create_vote = CreateVote.Field()
+class RelayMutation(graphene.ObjectType):
+    relay_create_link = RelayCreateLink.Field()
